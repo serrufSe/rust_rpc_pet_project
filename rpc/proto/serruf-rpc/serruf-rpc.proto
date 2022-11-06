@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package serruf_rpc;
+
+import "google/protobuf/empty.proto";
+
+service RpcProcessing {
+  rpc Transmit (stream RequestMessage) returns (google.protobuf.Empty);
+}
+
+message RequestMessage {
+  uint64 id = 1;
+  string data = 2;
+}
