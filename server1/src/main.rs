@@ -1,5 +1,5 @@
 use std::net::ToSocketAddrs;
-use std::sync::Mutex;
+use std::sync::Mutex; // TODO try futures::lock::Mutex in advance
 use tonic::transport::Server;
 use serruf_rpc::rpc_processing::rpc_processing_server::RpcProcessingServer;
 use serruf_rpc::rpc_processing::RequestMessage;
@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Sender, Receiver};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio::time::{sleep, Duration};
-use common::RpcProcessingService;
+use common::{RpcProcessingService, Settings};
 use serruf_rpc::rpc_processing::rpc_processing_client::RpcProcessingClient;
 use backoff::ExponentialBackoff;
 use backoff::future::retry;
@@ -39,7 +39,7 @@ async fn on_element(unique_client_sender: &Mutex<Option<async_channel::Sender<Re
             }
         }
         Err(_) => {
-            println!("Lock protection");
+            println!("Lock is poisoned");
         }
     };
 }
@@ -66,6 +66,8 @@ fn start_client() -> async_channel::Sender<RequestMessage> {
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("Start server1");
+    let settings = Settings::new()?;
+    println!("{}", settings.server.addr);
     //handle message from server pass it through consumer and throw it to client
     let (server_sender, server_receiver): (Sender<RequestMessage>, Receiver<RequestMessage>) = mpsc::channel(1);
 
@@ -77,7 +79,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let rpc_service = RpcProcessingService { sender: server_sender };
     let server_future = Server::builder()
         .add_service(RpcProcessingServer::new(rpc_service))
-        .serve("localhost:50051".to_socket_addrs().unwrap().next().unwrap());
+        .serve(settings.server.addr.to_socket_addrs().unwrap().next().unwrap());
 
     join!(server_future, consumer_future);
     println!("after all");
