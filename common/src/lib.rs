@@ -1,7 +1,9 @@
 mod settings;
 mod service;
 
-use std::cell::RefCell;
+#[macro_use]
+extern crate lazy_static;
+
 use std::future::Future;
 use std::net::ToSocketAddrs;
 use std::sync::Mutex; // TODO try futures::lock::Mutex in advance
@@ -17,16 +19,21 @@ use serruf_rpc::rpc_processing::rpc_processing_client::RpcProcessingClient;
 use backoff::ExponentialBackoff;
 use backoff::future::retry;
 
+lazy_static! {
+    static ref CONFIG: settings::Settings =
+        settings::Settings::new().expect("config can be loaded");
+}
+
+
 fn start_client() -> async_channel::Sender<RequestMessage> {
     let (result_sender, client_receiver): (async_channel::Sender<RequestMessage>, async_channel::Receiver<RequestMessage>) = async_channel::unbounded();
-
-    println!("Connect to server3");
+    println!("Connect to server {}", CONFIG.routing.connect_to);
 
     tokio::spawn(async move {
         retry(ExponentialBackoff::default(), || async {
             let r_clone = client_receiver.clone();
-            println!("Establish connect to server3");
-            RpcProcessingClient::connect("http://localhost:50052")
+            println!("Establish connect to server {}", CONFIG.routing.connect_to);
+            RpcProcessingClient::connect(CONFIG.routing.connect_to.clone())
                 .map_err(|e| backoff::Error::from(e.to_string()))
                 .and_then(|mut client: RpcProcessingClient<tonic::transport::Channel>| async move {
                     client.transmit(r_clone).map_err(|e| backoff::Error::from(e.to_string())).await
@@ -38,9 +45,7 @@ fn start_client() -> async_channel::Sender<RequestMessage> {
 }
 
 pub async fn run<Fn, F>(mut logic: Fn) -> Result<(), Box<dyn std::error::Error>> where Fn: FnMut(RequestMessage) -> F, F: Future<Output=RequestMessage> {
-    println!("Start server1");
-    let settings = Settings::new()?;
-    println!("{}", settings.server.addr);
+    println!("Start server for {}", CONFIG.server.addr);
     //handle message from server pass it through consumer and throw it to client
     let (server_sender, server_receiver): (Sender<RequestMessage>, Receiver<RequestMessage>) = mpsc::channel(1);
 
@@ -75,7 +80,7 @@ pub async fn run<Fn, F>(mut logic: Fn) -> Result<(), Box<dyn std::error::Error>>
     let rpc_service = RpcProcessingService { sender: server_sender };
     let server_future = Server::builder()
         .add_service(RpcProcessingServer::new(rpc_service))
-        .serve(settings.server.addr.to_socket_addrs().unwrap().next().unwrap());
+        .serve(CONFIG.server.addr.to_socket_addrs().unwrap().next().unwrap());
 
     join!(server_future, consumer_future);
     println!("after all");

@@ -4,6 +4,6 @@ members = [
     "common",
     "server1",
     "server2",
-    "server3",
+    "client",
     "rpc"
 ]

@@ -7,8 +7,14 @@ pub struct Server {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct Routing {
+    pub connect_to: String
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct Settings {
-    pub server: Server
+    pub server: Server,
+    pub routing: Routing
 }
 
 const CONFIG_FILE_PATH: &str = "./config/Default.toml";

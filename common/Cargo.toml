@@ -24,3 +24,4 @@ rust-embed = "6.3.0"
 config = "0.13.1"
 async-channel = "1.7.1"
 backoff = { version = "0.4.0", features = ["tokio"] }
+lazy_static = "1.4.0"
