@@ -16,7 +16,7 @@ impl RpcProcessing for RpcProcessingService {
         while let Some(result) = in_stream.next().await {
             match result {
                 Ok(v) => {
-                    println!("Got {} in server", v.data);
+                    println!("Got {} in server", v.id);
                     self.sender.send(v).await.unwrap();
                 }
                 Err(_) => {

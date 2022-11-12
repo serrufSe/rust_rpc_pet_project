@@ -52,7 +52,7 @@ pub async fn run<Fn, F>(mut logic: Fn) -> Result<(), Box<dyn std::error::Error>>
     let client_sender: Mutex<Option<async_channel::Sender<RequestMessage>>> = Mutex::new(None);
 
     let consumer_future = ReceiverStream::new(server_receiver)
-        .for_each_concurrent(2, |element| {
+        .for_each_concurrent(1, |element| { // TODO processed stuck in limit  > 1
             let pending_computation = logic(element);
             async {
                 match client_sender.lock() {
