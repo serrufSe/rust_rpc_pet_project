@@ -6,7 +6,7 @@ extern crate lazy_static;
 
 use std::future::Future;
 use std::net::ToSocketAddrs;
-use std::sync::Mutex; // TODO try futures::lock::Mutex in advance
+use futures::lock::Mutex;
 use tonic::transport::Server;
 use serruf_rpc::rpc_processing::rpc_processing_server::RpcProcessingServer;
 use serruf_rpc::rpc_processing::RequestMessage;
@@ -52,28 +52,24 @@ pub async fn run<Fn, F>(mut logic: Fn) -> Result<(), Box<dyn std::error::Error>>
     let client_sender: Mutex<Option<async_channel::Sender<RequestMessage>>> = Mutex::new(None);
 
     let consumer_future = ReceiverStream::new(server_receiver)
-        .for_each_concurrent(1, |element| { // TODO processed stuck in limit  > 1
+        .for_each_concurrent(2, |element| {
             let pending_computation = logic(element);
             async {
-                match client_sender.lock() {
-                    Ok(mut sender_opt) => {
-                        let result_sender = sender_opt.get_or_insert_with(|| start_client());
-                        let result = pending_computation.await;
-                        let send_res = result_sender.send(result).await;
+                println!("try to acquire lock");
+                let mut sender_opt = client_sender.lock().await;
+                let result_sender = sender_opt.get_or_insert_with(|| start_client());
+                println!("get sender");
+                let result = pending_computation.await;
+                let send_res = result_sender.send(result).await;
 
-                        match send_res {
-                            Ok(_) => {
-                                println!("Send")
-                            }
-                            Err(ex) => {
-                                println!("Drop {}", ex.0.id)
-                            }
-                        }
+                match send_res {
+                    Ok(_) => {
+                        println!("Send")
                     }
-                    Err(_) => {
-                        println!("Lock is poisoned");
+                    Err(ex) => {
+                        println!("Drop {}", ex.0.id)
                     }
-                };
+                }
             }
         });
 
