@@ -6,6 +6,7 @@ extern crate lazy_static;
 
 use std::future::Future;
 use std::net::ToSocketAddrs;
+use std::sync::Arc;
 use futures::lock::Mutex;
 use tonic::transport::Server;
 use serruf_rpc::rpc_processing::rpc_processing_server::RpcProcessingServer;
@@ -24,8 +25,7 @@ lazy_static! {
         settings::Settings::new().expect("config can be loaded");
 }
 
-
-fn start_client() -> async_channel::Sender<RequestMessage> {
+fn start_client(client_sender: Arc<Mutex<Option<async_channel::Sender<RequestMessage>>>>) -> async_channel::Sender<RequestMessage> {
     let (result_sender, client_receiver): (async_channel::Sender<RequestMessage>, async_channel::Receiver<RequestMessage>) = async_channel::unbounded();
     println!("Connect to server {}", CONFIG.routing.connect_to);
 
@@ -38,7 +38,10 @@ fn start_client() -> async_channel::Sender<RequestMessage> {
                 .and_then(|mut client: RpcProcessingClient<tonic::transport::Channel>| async move {
                     client.transmit(r_clone).map_err(|e| backoff::Error::from(e.to_string())).await
                 }).await
-        }).await
+        }).await.unwrap();
+        let mut sender_opt = client_sender.lock().await;
+        *sender_opt = None;
+        println!("Dispose sender")
     });
 
     result_sender
@@ -49,7 +52,7 @@ pub async fn run<Fn, F>(mut logic: Fn) -> Result<(), Box<dyn std::error::Error>>
     //handle message from server pass it through consumer and throw it to client
     let (server_sender, server_receiver): (Sender<RequestMessage>, Receiver<RequestMessage>) = mpsc::channel(1);
 
-    let client_sender: Mutex<Option<async_channel::Sender<RequestMessage>>> = Mutex::new(None);
+    let client_sender: Arc<Mutex<Option<async_channel::Sender<RequestMessage>>>> = Arc::new(Mutex::new(None));
 
     let consumer_future = ReceiverStream::new(server_receiver)
         .for_each_concurrent(2, |element| {
@@ -57,7 +60,7 @@ pub async fn run<Fn, F>(mut logic: Fn) -> Result<(), Box<dyn std::error::Error>>
             async {
                 println!("try to acquire lock");
                 let mut sender_opt = client_sender.lock().await;
-                let result_sender = sender_opt.get_or_insert_with(|| start_client());
+                let result_sender = sender_opt.get_or_insert_with(|| start_client(Arc::clone(&client_sender)));
                 println!("get sender");
                 let result = pending_computation.await;
                 let send_res = result_sender.send(result).await;
