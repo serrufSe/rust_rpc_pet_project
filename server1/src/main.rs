@@ -8,6 +8,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Before long work");
         sleep(Duration::from_millis(1000)).await;
         println!("After long work");
-        RequestMessage{id: 1, data: format!("{} + server 1", element.data)}
+        RequestMessage{id: element.id, data: format!("{} + server 1", element.data)}
     }).await
 }

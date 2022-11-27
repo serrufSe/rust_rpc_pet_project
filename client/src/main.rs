@@ -1,4 +1,5 @@
 use std::net::ToSocketAddrs;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use tokio::join;
 use tokio::sync::mpsc;
@@ -16,21 +17,29 @@ use futures::FutureExt;
 use tonic::{Request, Response, Status, Streaming};
 
 // TODO stolen from tonic tests, simplify
-struct Svc(Arc<Mutex<Option<oneshot::Sender<()>>>>);
+struct Svc(Arc<Mutex<Option<oneshot::Sender<()>>>>, usize);
 
 #[tonic::async_trait]
 impl RpcProcessing for Svc {
     async fn transmit(&self, request: Request<Streaming<RequestMessage>>) -> Result<Response<()>, Status> {
+        let mut counter = 0;
         let mut in_stream = request.into_inner();
-        match in_stream.next().await{
-            None => {}
-            Some(data) => {
-                let request = data.unwrap();
-                println!("Got {} with data {}", request.id, request.data)
+        while let Some(result) = in_stream.next().await {
+            match result {
+                Ok(_) => {
+                    println!("Got {}", result.unwrap().id);
+                    counter += 1;
+                    if counter >= self.1 {
+                        let mut l = self.0.lock().unwrap();
+                        l.take().unwrap().send(()).unwrap();
+                        break;
+                    }
+                }
+                Err(_) => {
+                    break;
+                }
             }
         }
-        let mut l = self.0.lock().unwrap();
-        l.take().unwrap().send(()).unwrap();
         Ok(Response::new(()))
     }
 }
@@ -65,10 +74,11 @@ async fn infinite() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn finite_single() -> Result<(), Box<dyn std::error::Error>> {
+async fn finite() -> Result<(), Box<dyn std::error::Error>> {
+    let range: Range<u32> = 1..11;
     let (tx, rx) = oneshot::channel::<()>();
     let sender = Arc::new(Mutex::new(Some(tx)));
-    let svc = RpcProcessingServer::new(Svc(sender));
+    let svc = RpcProcessingServer::new(Svc(sender, range.len()));
 
     let server_jh = tokio::spawn(async move {
         println!("Start server");
@@ -81,7 +91,7 @@ async fn finite_single() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Start client");
     let mut client = RpcProcessingClient::connect("http://localhost:50051").await.unwrap();
-    let request = tokio_stream::iter(vec![RequestMessage {id: 1, data: "kek".to_string()}]);
+    let request = tokio_stream::iter(range.map(|x: u32| RequestMessage {id: x, data: "kek".to_string()}));
     client.transmit(request).await.unwrap();
 
     server_jh.await.unwrap().unwrap();
@@ -92,5 +102,5 @@ async fn finite_single() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    finite_single().await
+    finite().await
 }

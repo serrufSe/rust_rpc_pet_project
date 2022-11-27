@@ -9,6 +9,6 @@ service RpcProcessing {
 }
 
 message RequestMessage {
-  uint64 id = 1;
+  uint32 id = 1;
   string data = 2;
 }
