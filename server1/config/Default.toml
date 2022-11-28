@@ -1,4 +1,4 @@
 [server]
 addr = "localhost:50051"
-[routing]
-connect_to = "http://localhost:50052"
+[service_discovery]
+name = "server1"
