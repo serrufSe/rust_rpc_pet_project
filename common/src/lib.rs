@@ -19,6 +19,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use serruf_rpc::rpc_processing::rpc_processing_client::RpcProcessingClient;
 use backoff::ExponentialBackoff;
 use backoff::future::retry;
+use futures::future::join_all;
 
 lazy_static! {
     static ref CONFIG: settings::Settings =
@@ -28,7 +29,7 @@ lazy_static! {
 lazy_static! {
     static ref ROUTING: HashMap<String, Vec<String>> = HashMap::from([
     (String::from("start"), vec![String::from("server1")]),
-    (String::from("server1"), vec![String::from("server2")]),
+    (String::from("server1"), vec![String::from("server2"), String::from("client")]),
     (String::from("server2"), vec![String::from("client")]),
 ]);
 }
@@ -42,68 +43,85 @@ lazy_static! {
 }
 
 type MySender = async_channel::Sender<RequestMessage>;
-type SenderOpt = Arc<Mutex<Option<MySender>>>;
+type Senders = Arc<Mutex<HashMap<String, MySender>>>;
 
-fn start_client(client_sender: SenderOpt, connect_to: Arc<String>) -> MySender {
+struct NodeInfo {
+    node_name: String,
+    node_address: String,
+}
+
+fn start_client(senders: Senders, node_info: Arc<NodeInfo>) -> MySender {
     let (result_sender, client_receiver) = async_channel::unbounded::<RequestMessage>();
-    println!("Connect to server {}", connect_to);
+    println!("Connect to server {}", node_info.node_name);
 
     tokio::spawn(async move {
         retry(ExponentialBackoff::default(), || async {
-            let r_clone = client_receiver.clone();
-            println!("Establish connect to server {}", connect_to);
-            RpcProcessingClient::connect((*connect_to).clone())
+            let receiver_for_retry = client_receiver.clone();
+            let node_for_retry = (*node_info).node_address.clone();
+            println!("Establish connect to server {}", node_info.node_address);
+
+            RpcProcessingClient::connect(node_for_retry)
                 .map_err(|e| backoff::Error::from(e.to_string()))
                 .and_then(|mut client: RpcProcessingClient<tonic::transport::Channel>| async move {
-                    client.transmit(r_clone).map_err(|e| backoff::Error::from(e.to_string())).await
+                    client.transmit(receiver_for_retry).map_err(|e| backoff::Error::from(e.to_string())).await
                 }).await
         }).await.unwrap();
-        let mut sender_opt = client_sender.lock().await;
-        *sender_opt = None;
+
+        let mut sender_opt = senders.lock().await;
+        sender_opt.remove(&node_info.node_name);
         println!("Dispose sender")
     });
 
     result_sender
 }
 
-pub async fn run<Fn, F>(mut logic: Fn) -> Result<(), Box<dyn std::error::Error>> where Fn: FnMut(RequestMessage) -> F, F: Future<Output=RequestMessage> {
+pub async fn run<Fn, F>(
+    mut logic: Fn
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    Fn: FnMut(RequestMessage) -> F,
+    F: Future<Output=RequestMessage>,
+{
     println!("Start server for {}", CONFIG.server.addr);
     //handle message from server pass it through consumer and throw it to client
     let (server_sender, server_receiver) = mpsc::channel::<RequestMessage>(1);
 
-    let connect_to_node = ROUTING.get(&CONFIG.service_discovery.name)
-        .expect("SD error")
-        .first() // TODO multiple nodes
-        .expect("Empty connect_to part");
-
-    let connect_to_address = NETWORK.get(connect_to_node)
-        .expect("Node not found")
+    let connect_to_nodes = ROUTING.get(&CONFIG.service_discovery.name)
+        .expect(&format!("{} service not found in static routing", CONFIG.service_discovery.name))
         .to_owned();
 
-    let connect_to_pointer = Arc::new(connect_to_address);
-    let client_sender: SenderOpt = Arc::new(Mutex::new(None));
+    let nodes_info: Vec<Arc<NodeInfo>> = connect_to_nodes.into_iter().map(|node| {
+        let address = NETWORK.get(&node).expect(&format!("{} node not found in static SD", node)).to_owned();
+        Arc::new(NodeInfo { node_name: node, node_address: address })
+    }).collect();
+
+    let senders: Senders = Arc::new(Mutex::new(HashMap::new()));
 
     let consumer_future = ReceiverStream::new(server_receiver)
         .for_each_concurrent(2, |element| {
             let pending_computation = logic(element);
             async {
-                println!("try to acquire lock");
-                let mut sender_opt = client_sender.lock().await;
-                let result_sender = sender_opt.get_or_insert_with(||
-                    start_client(Arc::clone(&client_sender), Arc::clone(&connect_to_pointer))
-                );
-                println!("get sender");
                 let result = pending_computation.await;
-                let send_res = result_sender.send(result).await;
+                let broadcasting = nodes_info.iter().map(|node_info| async {
+                    println!("try to acquire lock");
+                    let mut sender_opt = senders.lock().await;
 
-                match send_res {
-                    Ok(_) => {
-                        println!("Send")
+                    let result_sender = sender_opt.entry(node_info.node_name.clone())
+                        .or_insert_with(|| start_client(Arc::clone(&senders), Arc::clone(node_info)));
+                    println!("get sender");
+
+                    let send_res = result_sender.send(result.clone()).await;
+
+                    match send_res {
+                        Ok(_) => {
+                            println!("Send")
+                        }
+                        Err(ex) => {
+                            println!("Drop {}", ex.0.id)
+                        }
                     }
-                    Err(ex) => {
-                        println!("Drop {}", ex.0.id)
-                    }
-                }
+                });
+                join_all(broadcasting).await;
             }
         });
 

@@ -47,7 +47,8 @@ impl RpcProcessing for Svc {
         while let Some(result) = in_stream.next().await {
             match result {
                 Ok(_) => {
-                    println!("Got {}", result.unwrap().id);
+                    let message = result.unwrap();
+                    println!("Got {} {}", message.id, message.data);
                     counter += 1;
                     if counter >= self.1 {
                         let mut l = self.0.lock().unwrap();
@@ -94,6 +95,7 @@ async fn infinite() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// TODO calculate expected response count by ROUTING
 async fn finite() -> Result<(), Box<dyn std::error::Error>> {
     let range: Range<u32> = 1..11;
     let (tx, rx) = oneshot::channel::<()>();
