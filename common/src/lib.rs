@@ -69,7 +69,8 @@ fn start_client(senders: Senders, node_info: Arc<NodeInfo>) -> MySender {
 
         let mut sender_opt = senders.lock().await;
         sender_opt.remove(&node_info.node_name);
-        println!("Dispose sender")
+        println!("Dispose sender");
+        drop(client_receiver);
     });
 
     result_sender

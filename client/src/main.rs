@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::net::ToSocketAddrs;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
+use atomic_counter::{AtomicCounter, RelaxedCounter};
 use tokio::join;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -36,23 +37,35 @@ lazy_static! {
 ]);
 }
 
-// TODO stolen from tonic tests, simplify
-struct Svc(Arc<Mutex<Option<oneshot::Sender<()>>>>, usize);
+struct ClientRpcService {
+    stop_sender: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    awaited_count: usize,
+    counters: HashMap<String, RelaxedCounter>,
+    awaited_nodes_counter: RelaxedCounter
+}
+
+impl ClientRpcService {
+
+    fn new(stop_sender: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+           awaited_count: usize,
+           counters: HashMap<String, RelaxedCounter>) -> ClientRpcService {
+        ClientRpcService {stop_sender, awaited_count, counters, awaited_nodes_counter: RelaxedCounter::new(1)}
+    }
+}
 
 #[tonic::async_trait]
-impl RpcProcessing for Svc {
+impl RpcProcessing for ClientRpcService {
     async fn transmit(&self, request: Request<Streaming<RequestMessage>>) -> Result<Response<()>, Status> {
-        let mut counter = 0;
         let mut in_stream = request.into_inner();
         while let Some(result) = in_stream.next().await {
             match result {
                 Ok(_) => {
                     let message = result.unwrap();
-                    println!("Got {} {}", message.id, message.data);
-                    counter += 1;
-                    if counter >= self.1 {
-                        let mut l = self.0.lock().unwrap();
-                        l.take().unwrap().send(()).unwrap();
+                    let counter = self.counters.get(&message.last_node).expect("Missing counter");
+                    let got = counter.inc();
+                    println!("Got {} {} {}", message.id, message.data, got);
+                    if got >= self.awaited_count {
+                        println!("Stop success {}", message.last_node);
                         break;
                     }
                 }
@@ -60,6 +73,11 @@ impl RpcProcessing for Svc {
                     break;
                 }
             }
+        }
+        let finished_nodes = self.awaited_nodes_counter.inc();
+        if finished_nodes >= self.counters.len() {
+            let mut l = self.stop_sender.lock().unwrap();
+            l.take().unwrap().send(()).unwrap();
         }
         Ok(Response::new(()))
     }
@@ -71,10 +89,9 @@ async fn infinite() -> Result<(), Box<dyn std::error::Error>> {
         let next_state = id + 1;
         sleep(Duration::from_millis(1000)).await;
         println!("Return {} for sending", id);
-        Some((RequestMessage {id, data: "kek".to_string()}, next_state))
+        Some((RequestMessage { id, data: "kek".to_string(), last_node: "client".to_string() }, next_state))
     });
     let resp = client.transmit(requests);
-
 
     println!("Start client");
     let (server_sender, server_receiver): (Sender<RequestMessage>, Receiver<RequestMessage>) = mpsc::channel(1);
@@ -95,12 +112,16 @@ async fn infinite() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// TODO calculate expected response count by ROUTING
 async fn finite() -> Result<(), Box<dyn std::error::Error>> {
     let range: Range<u32> = 1..11;
     let (tx, rx) = oneshot::channel::<()>();
     let sender = Arc::new(Mutex::new(Some(tx)));
-    let svc = RpcProcessingServer::new(Svc(sender, range.len()));
+    let counters: HashMap<String, RelaxedCounter> = HashMap::from([
+        ("server1".to_string(), RelaxedCounter::new(1)),
+        ("server2".to_string(), RelaxedCounter::new(1)),
+    ]);
+
+    let svc = RpcProcessingServer::new(ClientRpcService::new(sender, range.len(), counters));
 
     let server_jh = tokio::spawn(async move {
         println!("Start server");
@@ -114,11 +135,11 @@ async fn finite() -> Result<(), Box<dyn std::error::Error>> {
     println!("Start client");
     let start_node = ROUTING.get("start")
         .expect("Start node not found")
-        .first() // TODO multiple nodes
+        .first()
         .expect("Empty start node");
     let start_node_address = NETWORK.get(start_node).expect("Start node address not found").to_owned();
     let mut client = RpcProcessingClient::connect(start_node_address).await.unwrap();
-    let request = tokio_stream::iter(range.map(|x: u32| RequestMessage {id: x, data: "kek".to_string()}));
+    let request = tokio_stream::iter(range.map(|x: u32| RequestMessage { id: x, data: "kek".to_string(), last_node: "client".to_string() }));
     client.transmit(request).await.unwrap();
 
     server_jh.await.unwrap().unwrap();

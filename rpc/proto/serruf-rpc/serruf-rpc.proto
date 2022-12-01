@@ -11,4 +11,5 @@ service RpcProcessing {
 message RequestMessage {
   uint32 id = 1;
   string data = 2;
+  string last_node = 3;
 }
