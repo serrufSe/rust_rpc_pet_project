@@ -1,0 +1,5 @@
+{
+  "server1": "http://localhost:50051",
+  "server2": "http://localhost:50052",
+  "client": "http://localhost:50053"
+}

@@ -1,5 +1,6 @@
 mod settings;
 mod service;
+mod service_discovery;
 
 #[macro_use]
 extern crate lazy_static;
@@ -8,7 +9,6 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
-use futures::lock::Mutex;
 use tonic::transport::Server;
 use serruf_rpc::rpc_processing::rpc_processing_server::RpcProcessingServer;
 use serruf_rpc::rpc_processing::RequestMessage;
@@ -20,11 +20,9 @@ use serruf_rpc::rpc_processing::rpc_processing_client::RpcProcessingClient;
 use backoff::ExponentialBackoff;
 use backoff::future::retry;
 use futures::future::join_all;
+use dashmap::DashMap;
 
-lazy_static! {
-    static ref CONFIG: settings::Settings =
-        settings::Settings::new().expect("config can be loaded");
-}
+lazy_static! {static ref CONFIG: settings::Settings = settings::Settings::new().expect("config can be loaded");}
 
 lazy_static! {
     static ref ROUTING: HashMap<String, Vec<String>> = HashMap::from([
@@ -34,16 +32,10 @@ lazy_static! {
 ]);
 }
 
-lazy_static! {
-    static ref NETWORK: HashMap<String, String> = HashMap::from([
-    (String::from("server1"), String::from("http://localhost:50051")),
-    (String::from("server2"), String::from("http://localhost:50052")),
-    (String::from("client"), String::from("http://localhost:50053")),
-]);
-}
+lazy_static! {static ref NETWORK: HashMap<String, String> = service_discovery::sd_from_file();}
 
 type MySender = async_channel::Sender<RequestMessage>;
-type Senders = Arc<Mutex<HashMap<String, MySender>>>;
+type Senders = Arc<DashMap<String, MySender>>;
 
 struct NodeInfo {
     node_name: String,
@@ -67,8 +59,7 @@ fn start_client(senders: Senders, node_info: Arc<NodeInfo>) -> MySender {
                 }).await
         }).await.unwrap();
 
-        let mut sender_opt = senders.lock().await;
-        sender_opt.remove(&node_info.node_name);
+        senders.remove(&node_info.node_name);
         println!("Dispose sender");
         drop(client_receiver);
     });
@@ -96,7 +87,7 @@ where
         Arc::new(NodeInfo { node_name: node, node_address: address })
     }).collect();
 
-    let senders: Senders = Arc::new(Mutex::new(HashMap::new()));
+    let senders: Senders = Arc::new(DashMap::new());
 
     let consumer_future = ReceiverStream::new(server_receiver)
         .for_each_concurrent(2, |element| {
@@ -105,9 +96,8 @@ where
                 let result = pending_computation.await;
                 let broadcasting = nodes_info.iter().map(|node_info| async {
                     println!("try to acquire lock");
-                    let mut sender_opt = senders.lock().await;
 
-                    let result_sender = sender_opt.entry(node_info.node_name.clone())
+                    let result_sender = senders.entry(node_info.node_name.clone())
                         .or_insert_with(|| start_client(Arc::clone(&senders), Arc::clone(node_info)));
                     println!("get sender");
 
@@ -138,4 +128,5 @@ where
 
 pub use crate::settings::Settings;
 pub use crate::service::RpcProcessingService;
+pub use service_discovery::sd_from_file;
 

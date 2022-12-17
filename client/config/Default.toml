@@ -1,0 +1,4 @@
+[server]
+addr = "localhost:50053"
+[service_discovery]
+name = "client"

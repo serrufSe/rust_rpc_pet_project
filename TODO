@@ -1,5 +1,3 @@
 check sender memory leak after remove from map
-https://github.com/xacrimon/dashmap for senders map
 dispose from static ROUTING and NETWORK
-calculate client nodes counters base on ROUTING
 support multi nodes in client
