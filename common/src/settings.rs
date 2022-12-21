@@ -1,5 +1,7 @@
+use std::time::Duration;
 use config::{Config, ConfigError, File};
 use serde::Deserialize;
+use duration_str::deserialize_duration;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Server {
@@ -8,13 +10,29 @@ pub struct Server {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServiceDiscovery {
-    pub name: String
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Settings {
     pub server: Server,
-    pub service_discovery: ServiceDiscovery
+    pub service_discovery: ServiceDiscovery,
+    pub consul: Consul
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Consul {
+    pub address: String,
+    pub health_check: ConsulHC
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ConsulHC {
+    pub name: String,
+    pub id: String,
+    pub ttl: String,
+    #[serde(deserialize_with = "deserialize_duration")]
+    pub interval_duration: Duration
 }
 
 const CONFIG_FILE_PATH: &str = "./config/Default.toml";

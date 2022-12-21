@@ -1,11 +1,11 @@
 mod settings;
 mod service;
 mod service_discovery;
+mod routing;
 
 #[macro_use]
 extern crate lazy_static;
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
@@ -24,23 +24,10 @@ use dashmap::DashMap;
 
 lazy_static! {static ref CONFIG: settings::Settings = settings::Settings::new().expect("config can be loaded");}
 
-lazy_static! {
-    static ref ROUTING: HashMap<String, Vec<String>> = HashMap::from([
-    (String::from("start"), vec![String::from("server1")]),
-    (String::from("server1"), vec![String::from("server2"), String::from("client")]),
-    (String::from("server2"), vec![String::from("client")]),
-]);
-}
-
-lazy_static! {static ref NETWORK: HashMap<String, String> = service_discovery::sd_from_file();}
+static PARALLELISM: usize = 2;
 
 type MySender = async_channel::Sender<RequestMessage>;
 type Senders = Arc<DashMap<String, MySender>>;
-
-struct NodeInfo {
-    node_name: String,
-    node_address: String,
-}
 
 fn start_client(senders: Senders, node_info: Arc<NodeInfo>) -> MySender {
     let (result_sender, client_receiver) = async_channel::unbounded::<RequestMessage>();
@@ -67,6 +54,32 @@ fn start_client(senders: Senders, node_info: Arc<NodeInfo>) -> MySender {
     result_sender
 }
 
+async fn broadcast_result<F>(
+    pending_computation: F,
+    nodes_info: &Vec<Arc<NodeInfo>>,
+    senders: &Senders,
+)
+where F: Future<Output=RequestMessage> {
+    let result = pending_computation.await;
+    let broadcasting = nodes_info.iter().map(|node_info| async {
+        let result_sender = senders.entry(node_info.node_name.clone())
+            .or_insert_with(|| start_client(Arc::clone(senders), Arc::clone(node_info)));
+        println!("get sender");
+
+        let send_res = result_sender.send(result.clone()).await;
+
+        match send_res {
+            Ok(_) => {
+                println!("Send")
+            }
+            Err(ex) => {
+                println!("Drop {}", ex.0.id)
+            }
+        }
+    });
+    join_all(broadcasting).await;
+}
+
 pub async fn run<Fn, F>(
     mut logic: Fn
 ) -> Result<(), Box<dyn std::error::Error>>
@@ -74,47 +87,22 @@ where
     Fn: FnMut(RequestMessage) -> F,
     F: Future<Output=RequestMessage>,
 {
+    let ds = DiscoveryService::new(&CONFIG);
+    ds.register().await;
+    ds.stat_check().await;
+
+    let rs = StaticRouting::init();
+
     println!("Start server for {}", CONFIG.server.addr);
     //handle message from server pass it through consumer and throw it to client
     let (server_sender, server_receiver) = mpsc::channel::<RequestMessage>(1);
-
-    let connect_to_nodes = ROUTING.get(&CONFIG.service_discovery.name)
-        .expect(&format!("{} service not found in static routing", CONFIG.service_discovery.name))
-        .to_owned();
-
-    let nodes_info: Vec<Arc<NodeInfo>> = connect_to_nodes.into_iter().map(|node| {
-        let address = NETWORK.get(&node).expect(&format!("{} node not found in static SD", node)).to_owned();
-        Arc::new(NodeInfo { node_name: node, node_address: address })
-    }).collect();
-
+    let nodes_info = ds.get_nodes(rs.connect_to_nodes(&CONFIG.service_discovery.name)).await;
     let senders: Senders = Arc::new(DashMap::new());
 
     let consumer_future = ReceiverStream::new(server_receiver)
-        .for_each_concurrent(2, |element| {
-            let pending_computation = logic(element);
-            async {
-                let result = pending_computation.await;
-                let broadcasting = nodes_info.iter().map(|node_info| async {
-                    println!("try to acquire lock");
-
-                    let result_sender = senders.entry(node_info.node_name.clone())
-                        .or_insert_with(|| start_client(Arc::clone(&senders), Arc::clone(node_info)));
-                    println!("get sender");
-
-                    let send_res = result_sender.send(result.clone()).await;
-
-                    match send_res {
-                        Ok(_) => {
-                            println!("Send")
-                        }
-                        Err(ex) => {
-                            println!("Drop {}", ex.0.id)
-                        }
-                    }
-                });
-                join_all(broadcasting).await;
-            }
-        });
+        .for_each_concurrent(PARALLELISM, |element|
+            broadcast_result(logic(element), &nodes_info, &senders)
+        );
 
     let rpc_service = RpcProcessingService { sender: server_sender };
     let server_future = Server::builder()
@@ -128,5 +116,7 @@ where
 
 pub use crate::settings::Settings;
 pub use crate::service::RpcProcessingService;
-pub use service_discovery::sd_from_file;
+pub use crate::service_discovery::DiscoveryService;
+use crate::service_discovery::NodeInfo;
+pub use crate::routing::{RoutingService, StaticRouting};
 

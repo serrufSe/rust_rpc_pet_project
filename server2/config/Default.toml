@@ -2,3 +2,10 @@
 addr = "localhost:50052"
 [service_discovery]
 name = "server2"
+[consul]
+address = "http://127.0.0.1:8500"
+[consul.health_check]
+name = "server2"
+id = "server2"
+ttl = "10s"
+interval_duration = "9s"

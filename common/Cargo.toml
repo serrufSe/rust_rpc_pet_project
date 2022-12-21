@@ -20,3 +20,5 @@ async-channel = "1.7.1"
 backoff = { version = "0.4.0", features = ["tokio"] }
 lazy_static = "1.4.0"
 dashmap = "5.4.0"
+consulrs = "0.1.0"
+duration-str = "0.5.0"
