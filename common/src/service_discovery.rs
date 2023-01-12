@@ -65,11 +65,11 @@ impl<'a> DiscoveryService<'a> {
         response.response.address.expect(&format!("No address for {}", service_name))
     }
 
-    pub async fn get_nodes(&self, connect_to_nodes: Vec<String>) -> Vec<Arc<NodeInfo>> {
+    pub async fn get_nodes(&self, connect_to_nodes: Vec<String>) -> Vec<NodeInfo> {
         let futures = connect_to_nodes.into_iter().map(|node| async {
             let address = self.get_service_address(&node).await;
 
-            Arc::new(NodeInfo { node_name: node, node_address: address })
+            NodeInfo { node_name: node, node_address: address }
         });
         join_all(futures).await
     }

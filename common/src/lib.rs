@@ -21,6 +21,7 @@ use backoff::ExponentialBackoff;
 use backoff::future::retry;
 use futures::future::join_all;
 use dashmap::DashMap;
+use async_channel::unbounded;
 
 lazy_static! {static ref CONFIG: settings::Settings = settings::Settings::new().expect("config can be loaded");}
 
@@ -30,7 +31,7 @@ type MySender = async_channel::Sender<RequestMessage>;
 type Senders = Arc<DashMap<String, MySender>>;
 
 fn start_client(senders: Senders, node_info: Arc<NodeInfo>) -> MySender {
-    let (result_sender, client_receiver) = async_channel::unbounded::<RequestMessage>();
+    let (result_sender, client_receiver) = unbounded::<RequestMessage>();
     println!("Connect to server {}", node_info.node_name);
 
     tokio::spawn(async move {
@@ -64,17 +65,9 @@ where F: Future<Output=RequestMessage> {
     let broadcasting = nodes_info.iter().map(|node_info| async {
         let result_sender = senders.entry(node_info.node_name.clone())
             .or_insert_with(|| start_client(Arc::clone(senders), Arc::clone(node_info)));
-        println!("get sender");
-
         let send_res = result_sender.send(result.clone()).await;
-
-        match send_res {
-            Ok(_) => {
-                println!("Send")
-            }
-            Err(ex) => {
-                println!("Drop {}", ex.0.id)
-            }
+        if let Err(ex) = send_res {
+            println!("Drop {}", ex.0.id)
         }
     });
     join_all(broadcasting).await;
@@ -97,11 +90,14 @@ where
     //handle message from server pass it through consumer and throw it to client
     let (server_sender, server_receiver) = mpsc::channel::<RequestMessage>(1);
     let nodes_info = ds.get_nodes(rs.connect_to_nodes(&CONFIG.service_discovery.name)).await;
+    let nodes_refs = nodes_info.into_iter()
+        .map(|node_info| Arc::new(node_info))
+        .collect::<Vec<Arc<NodeInfo>>>();
     let senders: Senders = Arc::new(DashMap::new());
 
     let consumer_future = ReceiverStream::new(server_receiver)
         .for_each_concurrent(PARALLELISM, |element|
-            broadcast_result(logic(element), &nodes_info, &senders)
+            broadcast_result(logic(element), &nodes_refs, &senders)
         );
 
     let rpc_service = RpcProcessingService { sender: server_sender };
