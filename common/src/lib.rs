@@ -38,7 +38,7 @@ fn start_client(senders: Senders, node_info: Arc<NodeInfo>) -> MySender {
         retry(ExponentialBackoff::default(), || async {
             let receiver_for_retry = client_receiver.clone();
             let node_for_retry = (*node_info).node_address.clone();
-            println!("Establish connect to server {}", node_info.node_address);
+            println!("Establish connect to server {} {}", node_info.node_name, node_info.node_address);
 
             RpcProcessingClient::connect(node_for_retry)
                 .map_err(|e| backoff::Error::from(e.to_string()))
@@ -48,7 +48,7 @@ fn start_client(senders: Senders, node_info: Arc<NodeInfo>) -> MySender {
         }).await.unwrap();
 
         senders.remove(&node_info.node_name);
-        println!("Dispose sender");
+        println!("Dispose sender {}", node_info.node_name);
         drop(client_receiver);
     });
 

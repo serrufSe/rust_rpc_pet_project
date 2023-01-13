@@ -19,6 +19,7 @@ use tonic::{Request, Response, Status, Streaming};
 use common::{DiscoveryService, Settings, StaticRouting, RoutingService};
 use futures::future::join_all;
 use tokio::sync::broadcast;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 lazy_static! {static ref CONFIG: Settings = Settings::new().expect("config can be loaded");}
 
@@ -36,9 +37,16 @@ struct SendStream(RpcProcessingClient<Channel>, BroadcastStream<RequestMessage>)
 
 impl SendStream {
     async fn start(mut self) -> Result<Response<()>, Status> {
-        let fixed_stream = self.1.map(|element| match element {
-            Ok(value) => { value }
-            Err(_) => panic!("") // TODO fix me
+        let fixed_stream = self.1.filter_map(|x| async move {
+            match x {
+                Ok(message) => { Some(message) }
+                Err(err) => {
+                    if let BroadcastStreamRecvError::Lagged(lag) = err {
+                        println!("Slow receiver problem, lag {}", lag);
+                    }
+                    None
+                }
+            }
         });
         self.0.transmit(fixed_stream).await
     }

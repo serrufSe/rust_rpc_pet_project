@@ -1,3 +1,2 @@
-check sender memory leak after remove from map
-dispose from static ROUTING
-BroadcastStream does not fit RpcProcessingClient::transmit - resolve
+use consul for store ROUTING and watch for changes
+search for broadcasting with backpressure to avoid "slow receiver" problem
